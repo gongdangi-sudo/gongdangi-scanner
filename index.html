@@ -273,111 +273,80 @@ function processToken(token) {
   lastToken = token;
   lastProcessedAt = Date.now();
 
+  const requestId =
+    "SCAN_" +
+    Date.now() +
+    "_" +
+    Math.random().toString(36).slice(2, 10);
+
   setStatus(
     "출석 저장 중입니다. 서버 응답을 기다려주세요.",
     ""
   );
 
+  sendScanRequestV2(token, requestId, false);
+}
+
+function sendScanRequestV2(token, requestId, isRetry) {
   const callbackName =
     "__scanCallback_" +
     Date.now() +
     "_" +
-    Math.random()
-      .toString(36)
-      .slice(2, 8);
+    Math.random().toString(36).slice(2, 8);
 
-  const script =
-    document.createElement(
-      "script"
-    );
-
+  const script = document.createElement("script");
   let finished = false;
 
   const finishRequest = () => {
-    if (finished) {
-      return;
-    }
-
+    if (finished) return;
     finished = true;
-    scanRequestInFlight = false;
-    activeScanToken = "";
   };
 
   const cleanup = () => {
-    try {
-      delete window[
-        callbackName
-      ];
-    } catch (e) {}
-
-    if (script.parentNode) {
-      script.parentNode
-        .removeChild(script);
-    }
+    try { delete window[callbackName]; } catch (e) {}
+    if (script.parentNode) script.parentNode.removeChild(script);
   };
 
-  // Apps Script는 302 리다이렉트 후 브라우저 응답이 늦어질 수 있어
-  // 기존 7초 대신 30초까지 기다립니다.
-  const timeout =
-    setTimeout(() => {
-      cleanup();
-      finishRequest();
+  const timeout = setTimeout(() => {
+    cleanup();
+    finishRequest();
+
+    // 최초 응답을 못 받아도 바로 실패로 표시하지 않고
+    // 동일 requestId의 실제 저장 결과를 자동 확인합니다.
+    setStatus(
+      "서버 응답이 늦어 저장 여부를 자동 확인하고 있습니다.",
+      ""
+    );
+
+    checkScanStatusV2(token, requestId, 0);
+  }, 30000);
+
+  window[callbackName] = function(result) {
+    clearTimeout(timeout);
+    cleanup();
+    finishRequest();
+
+    if (result && result.pending) {
+      setStatus("출석 저장 처리 중입니다. 잠시만 기다려주세요.", "");
+      setTimeout(() => checkScanStatusV2(token, requestId, 0), 1200);
+      return;
+    }
+
+    if (!result || !result.success) {
+      scanRequestInFlight = false;
+      activeScanToken = "";
 
       setStatus(
-        "서버 응답이 지연되고 있습니다. 출석로그에서 저장 여부를 확인해주세요.",
+        result && result.message
+          ? result.message
+          : "출석 처리에 실패했습니다.",
         "error"
       );
-    }, 30000);
+      return;
+    }
 
-  window[callbackName] =
-    function(result) {
-      clearTimeout(timeout);
-      cleanup();
-      finishRequest();
-
-      if (
-        !result ||
-        !result.success
-      ) {
-        setStatus(
-          result &&
-          result.message
-            ? result.message
-            : "출석 처리에 실패했습니다.",
-          "error"
-        );
-        return;
-      }
-
-      const student =
-        result.student || {};
-
-      setStatus(
-        '<div class="student-name">' +
-        esc(student.name) +
-        '</div>' +
-        esc(
-          student.classroom || ""
-        ) +
-        ' · ' +
-        esc(student.seat || "") +
-        '번<br>' +
-        '<strong>' +
-        esc(
-          result.message || ""
-        ) +
-        '</strong> · ' +
-        esc(
-          result.processedAt || ""
-        ),
-        "success",
-        true
-      );
-
-      if (navigator.vibrate) {
-        navigator.vibrate(120);
-      }
-    };
+    renderScanSuccessV2(result);
+  };
 
   script.onerror = function() {
     clearTimeout(timeout);
@@ -385,28 +354,163 @@ function processToken(token) {
     finishRequest();
 
     setStatus(
-      "서버 연결에 실패했습니다. 잠시 후 다시 스캔해주세요.",
+      "서버 연결 확인 중입니다. 저장 여부를 자동 확인하고 있습니다.",
+      ""
+    );
+    checkScanStatusV2(token, requestId, 0);
+  };
+
+  const params = new URLSearchParams({
+    action:"scan",
+    token:token,
+    type:selectedType,
+    key:SCANNER_KEY,
+    requestId:requestId,
+    callback:callbackName,
+    _:String(Date.now())
+  });
+
+  script.src = API_URL + "?" + params.toString();
+  document.body.appendChild(script);
+}
+
+function checkScanStatusV2(token, requestId, attempt) {
+  const callbackName =
+    "__scanStatusCallback_" +
+    Date.now() +
+    "_" +
+    Math.random().toString(36).slice(2, 8);
+
+  const script = document.createElement("script");
+  let done = false;
+
+  const cleanup = () => {
+    try { delete window[callbackName]; } catch (e) {}
+    if (script.parentNode) script.parentNode.removeChild(script);
+  };
+
+  const timeout = setTimeout(() => {
+    if (done) return;
+    done = true;
+    cleanup();
+
+    if (attempt < 2) {
+      setTimeout(
+        () => checkScanStatusV2(token, requestId, attempt + 1),
+        1800
+      );
+      return;
+    }
+
+    scanRequestInFlight = false;
+    activeScanToken = "";
+
+    setStatus(
+      "서버 응답이 계속 지연되고 있습니다. 출석로그에서 저장 여부를 확인해주세요.",
+      "error"
+    );
+  }, 12000);
+
+  window[callbackName] = function(result) {
+    if (done) return;
+    done = true;
+    clearTimeout(timeout);
+    cleanup();
+
+    if (result && result.success) {
+      renderScanSuccessV2(result);
+      return;
+    }
+
+    if (result && result.pending) {
+      if (attempt < 3) {
+        setStatus("출석 저장 처리 중입니다. 자동 확인 중입니다.", "");
+        setTimeout(
+          () => checkScanStatusV2(token, requestId, attempt + 1),
+          1500
+        );
+        return;
+      }
+    }
+
+    // 저장완료 기록이 아직 없으면 동일 requestId로 1회만 안전 재요청.
+    // 서버는 requestId 결과를 기억하므로 완료된 요청은 중복 저장하지 않습니다.
+    if (attempt === 0) {
+      setStatus("응답을 다시 확인하고 있습니다.", "");
+      sendScanRequestV2(token, requestId, true);
+      return;
+    }
+
+    scanRequestInFlight = false;
+    activeScanToken = "";
+
+    setStatus(
+      result && result.message
+        ? result.message
+        : "출석 저장 결과를 확인하지 못했습니다. 출석로그를 확인해주세요.",
       "error"
     );
   };
 
-  const params =
-    new URLSearchParams({
-      action: "scan",
-      token: token,
-      type: selectedType,
-      key: SCANNER_KEY,
-      callback: callbackName,
-      _: String(Date.now())
-    });
+  script.onerror = function() {
+    if (done) return;
+    done = true;
+    clearTimeout(timeout);
+    cleanup();
 
-  script.src =
-    API_URL +
-    "?" +
-    params.toString();
+    if (attempt < 2) {
+      setTimeout(
+        () => checkScanStatusV2(token, requestId, attempt + 1),
+        1800
+      );
+      return;
+    }
 
-  document.body
-    .appendChild(script);
+    scanRequestInFlight = false;
+    activeScanToken = "";
+    setStatus(
+      "서버 연결이 지연되고 있습니다. 출석로그에서 저장 여부를 확인해주세요.",
+      "error"
+    );
+  };
+
+  const params = new URLSearchParams({
+    action:"scanStatus",
+    requestId:requestId,
+    key:SCANNER_KEY,
+    callback:callbackName,
+    _:String(Date.now())
+  });
+
+  script.src = API_URL + "?" + params.toString();
+  document.body.appendChild(script);
+}
+
+function renderScanSuccessV2(result) {
+  scanRequestInFlight = false;
+  activeScanToken = "";
+
+  const student = result.student || {};
+
+  setStatus(
+    '<div class="student-name">' +
+    esc(student.name) +
+    '</div>' +
+    esc(student.classroom || "") +
+    ' · ' +
+    esc(student.seat || "") +
+    '번<br>' +
+    '<strong>' +
+    esc(result.message || "") +
+    '</strong> · ' +
+    esc(result.processedAt || ""),
+    "success",
+    true
+  );
+
+  if (navigator.vibrate) {
+    navigator.vibrate(120);
+  }
 }
 
 function unlockAudio() {
