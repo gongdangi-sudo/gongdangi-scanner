@@ -320,7 +320,10 @@ function processToken(token) {
 
           if (
             !isJiperpaRetry &&
-            message.indexOf("올바르지 않은 QR") !== -1
+            (
+              message.indexOf("올바르지 않은 QR") !== -1 ||
+              message.indexOf("QR 검증에 실패") !== -1
+            )
           ) {
             sendScanRequest(
               JIPERPA_API_URL,
