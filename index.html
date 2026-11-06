@@ -63,6 +63,7 @@
 
 <script>
 const API_URL = "https://gongdangi-student.gongdangi.workers.dev/";
+const JIPERPA_API_URL = "https://gongdangi-jiperpa-student.gongdangi.workers.dev/";
 const SCANNER_KEY = "be4406d0626e6249c27c348767f2b46ad78ded582a2771b40a4adf8bf41ab6aa";
 
 let selectedType = "입실";
@@ -265,108 +266,123 @@ function processToken(token) {
     ""
   );
 
-  const callbackName =
-    "__scanCallback_" +
-    Date.now() +
-    "_" +
-    Math.random()
-      .toString(36)
-      .slice(2, 8);
+  function sendScanRequest(apiUrl, isJiperpaRetry) {
+    const callbackName =
+      "__scanCallback_" +
+      Date.now() +
+      "_" +
+      Math.random()
+        .toString(36)
+        .slice(2, 8);
 
-  const script =
-    document.createElement(
-      "script"
-    );
+    const script =
+      document.createElement("script");
 
-  const cleanup = () => {
-    try {
-      delete window[
-        callbackName
-      ];
-    } catch (e) {}
+    let finished = false;
 
-    if (script.parentNode) {
-      script.parentNode
-        .removeChild(script);
-    }
-  };
+    const cleanup = () => {
+      try {
+        delete window[callbackName];
+      } catch (e) {}
 
-  const timeout =
-    setTimeout(() => {
-      cleanup();
-
-      setStatus(
-        "서버 응답이 늦습니다. 출석로그를 확인해주세요.",
-        "error"
-      );
-    }, 7000);
-
-  window[callbackName] =
-    function(result) {
-      clearTimeout(timeout);
-      cleanup();
-
-      if (
-        !result ||
-        !result.success
-      ) {
-        setStatus(
-          result &&
-          result.message
-            ? result.message
-            : "출석 처리에 실패했습니다.",
-          "error"
-        );
-        return;
-      }
-
-      const student =
-        result.student || {};
-
-      setStatus(
-        '<div class="student-name">' +
-        esc(student.name) +
-        '</div>' +
-        esc(
-          student.classroom || ""
-        ) +
-        ' · ' +
-        esc(student.seat || "") +
-        '번<br>' +
-        '<strong>' +
-        esc(
-          result.message || ""
-        ) +
-        '</strong> · ' +
-        esc(
-          result.processedAt || ""
-        ),
-        "success",
-        true
-      );
-
-      if (navigator.vibrate) {
-        navigator.vibrate(120);
+      if (script.parentNode) {
+        script.parentNode.removeChild(script);
       }
     };
 
-  const params =
-    new URLSearchParams({
-      action: "scan",
-      token: token,
-      type: selectedType,
-      key: SCANNER_KEY,
-      callback: callbackName,
-      _: String(Date.now())
-    });
+    const timeout =
+      setTimeout(() => {
+        if (finished) return;
 
-  script.src =
-    API_URL +
-    "?" +
-    params.toString();
+        finished = true;
+        cleanup();
 
-  document.body
-    .appendChild(script);
+        setStatus(
+          "서버 응답이 늦습니다. 출석로그를 확인해주세요.",
+          "error"
+        );
+      }, 7000);
+
+    window[callbackName] =
+      function(result) {
+        if (finished) return;
+
+        finished = true;
+
+        clearTimeout(timeout);
+        cleanup();
+
+        if (!result || !result.success) {
+          const message =
+            result && result.message
+              ? String(result.message)
+              : "출석 처리에 실패했습니다.";
+
+          if (
+            !isJiperpaRetry &&
+            message.indexOf("올바르지 않은 QR") !== -1
+          ) {
+            sendScanRequest(
+              JIPERPA_API_URL,
+              true
+            );
+            return;
+          }
+
+          setStatus(
+            message,
+            "error"
+          );
+
+          return;
+        }
+
+        const student =
+          result.student || {};
+
+        setStatus(
+          '<div class="student-name">' +
+          esc(student.name) +
+          '</div>' +
+          esc(student.classroom || "") +
+          ' · ' +
+          esc(student.seat || "") +
+          '<br>' +
+          '<strong>' +
+          esc(result.message || "") +
+          '</strong> · ' +
+          esc(result.processedAt || ""),
+          "success",
+          true
+        );
+
+        if (navigator.vibrate) {
+          navigator.vibrate(120);
+        }
+      };
+
+    const params =
+      new URLSearchParams({
+        action: "scan",
+        token: token,
+        type: selectedType,
+        key: SCANNER_KEY,
+        callback: callbackName,
+        _: String(Date.now())
+      });
+
+    script.src =
+      apiUrl +
+      "?" +
+      params.toString();
+
+    document.body.appendChild(script);
+  }
+
+  sendScanRequest(
+    API_URL,
+    false
+  );
 }
 
 function unlockAudio() {
